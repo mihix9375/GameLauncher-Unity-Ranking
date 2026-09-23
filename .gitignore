@@ -1,0 +1,10 @@
+.idea/
+.vs/
+.vscode/
+*.csproj
+*.sln
+*.user
+*.tmp
+*.log
+.DS_Store
+Thumbs.db
