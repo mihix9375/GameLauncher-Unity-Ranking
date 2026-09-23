@@ -51,17 +51,17 @@ GameLauncherがGameServerの接続先を管理するため、Unityプロジェ�
 4. GitHub repoのURLとバージョンタグを入力します。
 
 ```text
-https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.1.1
+https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.1.2
 ```
 
-開発中の最新版を使う場合は `#v0.1.1` を外せますが、完成したゲームではタグによるバージョン固定を推奨します。
+開発中の最新版を使う場合は `#v0.1.2` を外せますが、完成したゲームではタグによるバージョン固定を推奨します。
 
 `Packages/manifest.json`へ直接追加する場合は次のように記述します。
 
 ```json
 {
   "dependencies": {
-    "com.mihix.gamelauncher-ranking": "https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.1.1"
+    "com.mihix.gamelauncher-ranking": "https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.1.2"
   }
 }
 ```
@@ -148,14 +148,13 @@ Task<Leaderboard[]> GetLeaderboardsAsync(
 
 ## Unity Editorの診断ログ
 
-Unity EditorのPlay Modeで`GetLeaderboardsAsync`または`SubmitScoreAsync`を呼ぶと、Consoleへ次の情報を表示します。
+Unity EditorのPlay Modeで`GetLeaderboardsAsync`または`SubmitScoreAsync`を呼ぶと、本番通信は送信せず、ローカルで引数を診断します。
 
-- 呼び出した処理、ゲームID、ランキングID、接続先URL
-- 成功時に受信したランキング数または現在順位
-- 失敗時のHTTPステータス、通信エラー、応答本文
-- Launcher未起動、ID不一致、Server接続失敗などの確認ポイント
+- `gameId`、`leaderboardId`、プレイヤー名が空でないか検証
+- 呼び出した処理、ゲームID、ランキングIDをConsoleへ表示
+- 本番通信にはビルド後、GameLauncherからゲームを起動する必要があることを案内
 
-診断処理は`UNITY_EDITOR`のときだけコンパイルされるため、配布するゲームのビルドには入りません。Editorでもログを止めたい場合は、APIを呼ぶ前に次のように指定します。
+診断後は`RankingApiException`を送出するため、通常の`try/catch`で処理できます。診断処理は`UNITY_EDITOR`のときだけコンパイルされるため、配布するゲームでは通常どおりGameLauncherへ通信します。Editorで案内ログだけを止めたい場合は、APIを呼ぶ前に次のように指定します。
 
 ```csharp
 RankingApi.EnableEditorDiagnostics = false;

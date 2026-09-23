@@ -35,11 +35,13 @@ namespace GameLauncher.Ranking
             CancellationToken cancellationToken = default)
         {
             RequireValue(gameId, nameof(gameId));
-            string url = $"{NormalizedBaseUrl()}/v1/games/{UnityWebRequest.EscapeURL(gameId)}/leaderboards";
-
 #if UNITY_EDITOR
-            EditorDiagnostics.RequestStarted("ランキング取得", gameId, null, url);
+            if (EditorDiagnostics.BlockProductionRequests)
+            {
+                throw EditorDiagnostics.CreateEditorOnlyException("ランキング取得", gameId, null);
+            }
 #endif
+            string url = $"{NormalizedBaseUrl()}/v1/games/{UnityWebRequest.EscapeURL(gameId)}/leaderboards";
 
             using (UnityWebRequest request = UnityWebRequest.Get(url))
             {
@@ -48,16 +50,10 @@ namespace GameLauncher.Ranking
                 {
                     LeaderboardResponse response = JsonUtility.FromJson<LeaderboardResponse>(json);
                     Leaderboard[] leaderboards = response?.Leaderboards ?? Array.Empty<Leaderboard>();
-#if UNITY_EDITOR
-                    EditorDiagnostics.RequestSucceeded("ランキング取得", $"{leaderboards.Length}件のランキングを受信しました。");
-#endif
                     return leaderboards;
                 }
                 catch (Exception error)
                 {
-#if UNITY_EDITOR
-                    EditorDiagnostics.InvalidResponse("ランキング取得", json, error);
-#endif
                     throw new RankingApiException("ランキング応答を読み取れませんでした。", error);
                 }
             }
@@ -77,6 +73,12 @@ namespace GameLauncher.Ranking
             RequireValue(gameId, nameof(gameId));
             RequireValue(leaderboardId, nameof(leaderboardId));
             RequireValue(playerName, nameof(playerName));
+#if UNITY_EDITOR
+            if (EditorDiagnostics.BlockProductionRequests)
+            {
+                throw EditorDiagnostics.CreateEditorOnlyException("スコア送信", gameId, leaderboardId);
+            }
+#endif
 
             string url = $"{NormalizedBaseUrl()}/v1/games/{UnityWebRequest.EscapeURL(gameId)}" +
                          $"/leaderboards/{UnityWebRequest.EscapeURL(leaderboardId)}/scores";
@@ -84,10 +86,6 @@ namespace GameLauncher.Ranking
                 player_name = playerName.Trim(),
                 score = score,
             });
-
-#if UNITY_EDITOR
-            EditorDiagnostics.RequestStarted("スコア送信", gameId, leaderboardId, url);
-#endif
 
             using (UnityWebRequest request = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST))
             {
@@ -103,23 +101,14 @@ namespace GameLauncher.Ranking
                     {
                         throw new RankingApiException("スコア送信応答が空です。");
                     }
-#if UNITY_EDITOR
-                    EditorDiagnostics.RequestSucceeded("スコア送信", $"送信に成功しました。現在順位: {result.Rank}位");
-#endif
                     return result;
                 }
                 catch (RankingApiException)
                 {
-#if UNITY_EDITOR
-                    EditorDiagnostics.InvalidResponse("スコア送信", responseJson, null);
-#endif
                     throw;
                 }
                 catch (Exception error)
                 {
-#if UNITY_EDITOR
-                    EditorDiagnostics.InvalidResponse("スコア送信", responseJson, error);
-#endif
                     throw new RankingApiException("スコア送信応答を読み取れませんでした。", error);
                 }
             }
@@ -147,9 +136,6 @@ namespace GameLauncher.Ranking
                 return request.downloadHandler?.text ?? string.Empty;
             }
 
-#if UNITY_EDITOR
-            EditorDiagnostics.RequestFailed(request);
-#endif
             throw new RankingApiException(ReadError(request));
         }
 
@@ -198,24 +184,28 @@ namespace GameLauncher.Ranking
         {
             private const string Prefix = "[GameLauncher Ranking 診断]";
 
-            internal static void RequestStarted(
+            // constにすると、この後の本番通信用コードがコンパイラーから到達不能と判定されます。
+            // プロパティにして、Editorでは必ず本番通信を止めつつ警告を発生させないようにします。
+            internal static bool BlockProductionRequests => true;
+
+            internal static RankingApiException CreateEditorOnlyException(
                 string operation,
                 string gameId,
-                string leaderboardId,
-                string url)
+                string leaderboardId)
             {
-                if (!EnableEditorDiagnostics) return;
-
                 string leaderboard = string.IsNullOrWhiteSpace(leaderboardId)
                     ? string.Empty
                     : $" / leaderboardId: {leaderboardId}";
-                Debug.Log($"{Prefix} {operation}を開始します。gameId: {gameId}{leaderboard}\n接続先: {url}");
-            }
+                string message =
+                    $"{operation}の引数を確認しました。gameId: {gameId}{leaderboard}\n" +
+                    "Unity Editorから本番ランキング通信は行いません。実通信はゲームをビルドし、GameLauncherから起動して確認してください。";
 
-            internal static void RequestSucceeded(string operation, string detail)
-            {
-                if (!EnableEditorDiagnostics) return;
-                Debug.Log($"{Prefix} {operation} 成功: {detail}");
+                if (EnableEditorDiagnostics)
+                {
+                    Debug.LogWarning($"{Prefix} {message}");
+                }
+
+                return new RankingApiException(message);
             }
 
             internal static void InvalidParameter(string parameterName)
@@ -224,54 +214,6 @@ namespace GameLauncher.Ranking
                 Debug.LogError(
                     $"{Prefix} 引数 {parameterName} が空です。" +
                     "gameIdはmeta.jsonのid、leaderboardIdはGameServer管理画面の設定と完全に一致させてください。");
-            }
-
-            internal static void RequestFailed(UnityWebRequest request)
-            {
-                if (!EnableEditorDiagnostics) return;
-
-                string advice;
-                if (request.responseCode == 0)
-                {
-                    advice = "GameLauncherが起動しているか、ランキングAPIが127.0.0.1:50053で待ち受けているか確認してください。";
-                }
-                else if (request.responseCode == 404)
-                {
-                    advice = "gameIdとleaderboardIdが、meta.jsonおよびGameServer管理画面の設定と一致しているか確認してください。";
-                }
-                else if (request.responseCode >= 500)
-                {
-                    advice = "GameLauncherからGameServerへ接続できているか、GameServerのログとランキング設定を確認してください。";
-                }
-                else
-                {
-                    advice = "Consoleの応答本文とGameServer管理画面のランキング設定を確認してください。";
-                }
-
-                string body = Shorten(request.downloadHandler?.text);
-                Debug.LogError(
-                    $"{Prefix} 通信に失敗しました。\n" +
-                    $"URL: {request.url}\n" +
-                    $"HTTP: {request.responseCode} / Result: {request.result} / Error: {request.error}\n" +
-                    $"応答: {(string.IsNullOrWhiteSpace(body) ? "(なし)" : body)}\n" +
-                    $"確認ポイント: {advice}");
-            }
-
-            internal static void InvalidResponse(string operation, string response, Exception error)
-            {
-                if (!EnableEditorDiagnostics) return;
-
-                Debug.LogError(
-                    $"{Prefix} {operation}の応答を解析できませんでした。\n" +
-                    $"応答: {(string.IsNullOrWhiteSpace(response) ? "(空)" : Shorten(response))}\n" +
-                    $"例外: {(error == null ? "(なし)" : error.Message)}");
-            }
-
-            private static string Shorten(string value)
-            {
-                if (string.IsNullOrWhiteSpace(value)) return value;
-                const int maxLength = 500;
-                return value.Length <= maxLength ? value : value.Substring(0, maxLength) + "...";
             }
         }
 #endif
