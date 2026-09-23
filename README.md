@@ -9,6 +9,7 @@ UnityゲームからGameLauncher経由でランキングを利用するための
 - HTTP、JSON、URLエンコード、エラー応答をパッケージ内で処理
 - ランキングはゲームごとに最大2つ
 - 得点、タイム、手数などの符号付き64bit整数に対応
+- Unity EditorでのAPI呼び出し時に接続先や失敗原因を自動診断
 - Unity 2022.3 LTS以降に対応
 
 ## 必要なもの
@@ -50,17 +51,17 @@ GameLauncherがGameServerの接続先を管理するため、Unityプロジェ�
 4. GitHub repoのURLとバージョンタグを入力します。
 
 ```text
-https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.1.0
+https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.1.1
 ```
 
-開発中の最新版を使う場合は `#v0.1.0` を外せますが、完成したゲームではタグによるバージョン固定を推奨します。
+開発中の最新版を使う場合は `#v0.1.1` を外せますが、完成したゲームではタグによるバージョン固定を推奨します。
 
 `Packages/manifest.json`へ直接追加する場合は次のように記述します。
 
 ```json
 {
   "dependencies": {
-    "com.mihix.gamelauncher-ranking": "https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.1.0"
+    "com.mihix.gamelauncher-ranking": "https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.1.1"
   }
 }
 ```
@@ -144,6 +145,21 @@ Task<Leaderboard[]> GetLeaderboardsAsync(
 ```
 
 各`Leaderboard`の`Entries`には、上位記録の順位、プレイヤー名、スコア、投稿時刻が入ります。
+
+## Unity Editorの診断ログ
+
+Unity EditorのPlay Modeで`GetLeaderboardsAsync`または`SubmitScoreAsync`を呼ぶと、Consoleへ次の情報を表示します。
+
+- 呼び出した処理、ゲームID、ランキングID、接続先URL
+- 成功時に受信したランキング数または現在順位
+- 失敗時のHTTPステータス、通信エラー、応答本文
+- Launcher未起動、ID不一致、Server接続失敗などの確認ポイント
+
+診断処理は`UNITY_EDITOR`のときだけコンパイルされるため、配布するゲームのビルドには入りません。Editorでもログを止めたい場合は、APIを呼ぶ前に次のように指定します。
+
+```csharp
+RankingApi.EnableEditorDiagnostics = false;
+```
 
 ## 自分のゲームで変更する場所
 
