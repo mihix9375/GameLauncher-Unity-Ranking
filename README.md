@@ -51,17 +51,17 @@ GameLauncherがGameServerの接続先を管理するため、Unityプロジェ�
 4. GitHub repoのURLとバージョンタグを入力します。
 
 ```text
-https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#main
+https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.1.3
 ```
 
-この修正版のReleaseタグを作成した後は、完成したゲームでは`#main`をそのタグへ置き換えてバージョンを固定することを推奨します。
+開発中の最新版を使う場合は`#v0.1.3`を`#main`へ置き換えられますが、完成したゲームではタグによるバージョン固定を推奨します。
 
 `Packages/manifest.json`へ直接追加する場合は次のように記述します。
 
 ```json
 {
   "dependencies": {
-    "com.mihix.gamelauncher-ranking": "https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#main"
+    "com.mihix.gamelauncher-ranking": "https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.1.3"
   }
 }
 ```
