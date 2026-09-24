@@ -1,6 +1,6 @@
 {
   "name": "com.mihix.gamelauncher-ranking",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "displayName": "GameLauncher Ranking API",
   "description": "GameLauncherを経由してランキングの取得とスコア送信を行うUnity向けAPIです。",
   "unity": "2022.3",

@@ -51,17 +51,17 @@ GameLauncherがGameServerの接続先を管理するため、Unityプロジェ�
 4. GitHub repoのURLとバージョンタグを入力します。
 
 ```text
-https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.1.2
+https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#main
 ```
 
-開発中の最新版を使う場合は `#v0.1.2` を外せますが、完成したゲームではタグによるバージョン固定を推奨します。
+この修正版のReleaseタグを作成した後は、完成したゲームでは`#main`をそのタグへ置き換えてバージョンを固定することを推奨します。
 
 `Packages/manifest.json`へ直接追加する場合は次のように記述します。
 
 ```json
 {
   "dependencies": {
-    "com.mihix.gamelauncher-ranking": "https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.1.2"
+    "com.mihix.gamelauncher-ranking": "https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#main"
   }
 }
 ```
@@ -79,7 +79,6 @@ public class GameClear : MonoBehaviour
         try
         {
             ScoreResult result = await RankingApi.SubmitScoreAsync(
-                "TestGame",     // meta.jsonのid
                 "high_score",   // GameServerで設定したランキングID
                 playerName,
                 score);
@@ -103,7 +102,7 @@ public async void ShowRanking()
 {
     try
     {
-        Leaderboard[] boards = await RankingApi.GetLeaderboardsAsync("TestGame");
+        Leaderboard[] boards = await RankingApi.GetLeaderboardsAsync();
 
         foreach (Leaderboard board in boards)
         {
@@ -127,7 +126,6 @@ public async void ShowRanking()
 
 ```csharp
 Task<ScoreResult> SubmitScoreAsync(
-    string gameId,
     string leaderboardId,
     string playerName,
     long score,
@@ -140,15 +138,16 @@ Task<ScoreResult> SubmitScoreAsync(
 
 ```csharp
 Task<Leaderboard[]> GetLeaderboardsAsync(
-    string gameId,
     CancellationToken cancellationToken = default)
 ```
 
 各`Leaderboard`の`Entries`には、上位記録の順位、プレイヤー名、スコア、投稿時刻が入ります。
 
+ゲームIDはGameLauncherが起動時に自動設定します。互換性のため、先頭に`string gameId`を指定する従来のオーバーロードも利用できますが、Launcher経由の通信では実際に起動中のゲームIDが優先されます。
+
 ## Unity Editorの診断ログ
 
-Unity EditorのPlay Modeで`GetLeaderboardsAsync`または`SubmitScoreAsync`を呼ぶと、本番通信は送信せず、ローカルで引数を診断します。
+Unity EditorのPlay Modeで`GetLeaderboardsAsync`または`SubmitScoreAsync`を呼んでも、本番通信は送信しません。ゲームIDを省略するAPIではGameLauncherからの起動が必要だと案内し、ゲームIDを指定する従来のAPIでは引数をローカル診断します。
 
 - `gameId`、`leaderboardId`、プレイヤー名が空でないか検証
 - 呼び出した処理、ゲームID、ランキングIDをConsoleへ表示
@@ -162,12 +161,11 @@ RankingApi.EnableEditorDiagnostics = false;
 
 ## 自分のゲームで変更する場所
 
-- `TestGame` を、配布ZIPの `meta.json` に書いた `id` へ変更します。
 - `high_score` を、GameServer管理画面で作ったランキングIDへ変更します。
 - `score` には得点、タイム、手数などの整数値を渡します。
 - 大きい値と小さい値のどちらを上位にするかはGameServer側で設定します。
 
-ゲームIDとランキングIDは、大文字・小文字も含めてServer側の設定と同じ値を使用してください。
+ランキングIDは、大文字・小文字も含めてServer側の設定と同じ値を使用してください。ゲームIDはGameLauncherが自動で判定します。
 
 ## サンプルを読み込む
 
@@ -177,7 +175,8 @@ Package Managerでこのパッケージを選択し、`Samples`欄の`Basic Rank
 
 - GameLauncherが起動しているか確認してください。
 - GameLauncherのランキングServer API設定を確認してください。
-- ゲームIDとランキングIDの大文字・小文字を含め、設定が一致しているか確認してください。
+- ランキングIDの大文字・小文字を含め、設定が一致しているか確認してください。
+- ゲームを単体起動せず、GameLauncherの起動ボタンから実行してください。
 - GameServerとGameLauncherのWindows Firewall設定を確認してください。
 
 `RankingApiException`の`Message`には、Launcherへの接続失敗やServerから返されたエラー理由が入ります。ゲーム本編は通信失敗でも続行できるよう、ランキング処理を`try/catch`で囲んでください。

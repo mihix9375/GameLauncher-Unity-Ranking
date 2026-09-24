@@ -27,6 +27,16 @@ namespace GameLauncher.Ranking
         public static int TimeoutSeconds { get; set; } = 5;
 
         /// <summary>
+        /// GameLauncherから起動された現在のゲームのランキング一覧を取得します。
+        /// ゲームIDはLauncherが自動で渡すため、通常はこちらを使用してください。
+        /// </summary>
+        public static Task<Leaderboard[]> GetLeaderboardsAsync(
+            CancellationToken cancellationToken = default)
+        {
+            return GetLeaderboardsAsync(ResolveLaunchedGameId(), cancellationToken);
+        }
+
+        /// <summary>
         /// 指定したゲームのランキング一覧を取得します。
         /// gameIdには配布ZIPのmeta.jsonと同じidを指定します。
         /// </summary>
@@ -114,6 +124,24 @@ namespace GameLauncher.Ranking
             }
         }
 
+        /// <summary>
+        /// GameLauncherから起動された現在のゲームのランキングへスコアを送信します。
+        /// ゲームIDはLauncherが自動で渡すため、ランキングIDだけ指定します。
+        /// </summary>
+        public static Task<ScoreResult> SubmitScoreAsync(
+            string leaderboardId,
+            string playerName,
+            long score,
+            CancellationToken cancellationToken = default)
+        {
+            return SubmitScoreAsync(
+                ResolveLaunchedGameId(),
+                leaderboardId,
+                playerName,
+                score,
+                cancellationToken);
+        }
+
         private static async Task<string> SendAsync(
             UnityWebRequest request,
             CancellationToken cancellationToken)
@@ -166,6 +194,16 @@ namespace GameLauncher.Ranking
             return string.IsNullOrWhiteSpace(BaseUrl)
                 ? DefaultBaseUrl
                 : BaseUrl.Trim().TrimEnd('/');
+        }
+
+        private static string ResolveLaunchedGameId()
+        {
+            string gameId = Environment.GetEnvironmentVariable("GAMELAUNCHER_GAME_ID");
+            if (!string.IsNullOrWhiteSpace(gameId)) return gameId.Trim();
+
+            throw new RankingApiException(
+                "ゲームIDを取得できません。ゲームをビルドし、GameLauncherから起動して確認してください。" +
+                "Unity Editorで引数だけ確認する場合は、gameIdを指定するオーバーロードを使用してください。");
         }
 
         private static void RequireValue(string value, string parameterName)

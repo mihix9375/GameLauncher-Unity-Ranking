@@ -9,7 +9,6 @@ using UnityEngine;
 public sealed class RankingExample : MonoBehaviour
 {
     [Header("GameServerで設定した値")]
-    [SerializeField] private string gameId = "TestGame";
     [SerializeField] private string leaderboardId = "high_score";
 
     [Header("送信するテストデータ")]
@@ -22,7 +21,6 @@ public sealed class RankingExample : MonoBehaviour
         try
         {
             ScoreResult result = await RankingApi.SubmitScoreAsync(
-                gameId,
                 leaderboardId,
                 playerName,
                 score);
@@ -39,7 +37,7 @@ public sealed class RankingExample : MonoBehaviour
     {
         try
         {
-            Leaderboard[] boards = await RankingApi.GetLeaderboardsAsync(gameId);
+            Leaderboard[] boards = await RankingApi.GetLeaderboardsAsync();
             foreach (Leaderboard board in boards)
             {
                 Debug.Log($"ランキング: {board.Name} ({board.Id})");
