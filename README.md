@@ -5,7 +5,7 @@ UnityゲームからGameLauncher経由でランキングを利用するための
 
 ## 特徴
 
-- `await`できる2つの関数だけでランキングを利用可能
+- `await`できる関数でランキングの作成・取得・スコア送信が可能
 - HTTP、JSON、URLエンコード、エラー応答をパッケージ内で処理
 - ランキングはゲームごとに最大2つ
 - 得点、タイム、手数などの符号付き64bit整数に対応
@@ -17,7 +17,7 @@ UnityゲームからGameLauncher経由でランキングを利用するための
 - Unity 2022.3以降
 - Windows向けUnityゲーム
 - 起動中のGameLauncher
-- GameServer管理画面で設定済みのゲームIDとランキングID
+- GameLauncherから起動されたゲーム
 
 通信経路は次のとおりです。
 
@@ -27,21 +27,26 @@ Unityゲーム → GameLauncher (127.0.0.1:50053) → GameServer
 
 GameLauncherがGameServerの接続先を管理するため、Unityプロジェクトへ部内ServerのIPアドレスを書く必要はありません。
 
-## 最初にServer側を設定する
+> [!IMPORTANT]
+> **v0.2.0はv0.1.xと後方互換性がありません。**
+> `gameId`や文字列のランキングIDを渡す旧APIは削除されています。v0.1.xを利用しているゲームは、下記の「v0.1.xからの移行」を確認してコードを変更してください。GameLauncherとGameServerもv0.2.0対応版が必要です。
 
-1. GameServer管理画面を開きます。
-2. 対象ゲームの「ランキング」を開きます。
-3. ランキングID、表示名、並び順を設定します。
+## ランキングをゲームから作成する
 
-たとえば通常のハイスコアなら次のように設定します。
+ゲームの初期化時などに一度呼びます。0番・1番の固定スロットへ設定を同期するため、繰り返し呼んでもランキングが重複しません。
 
-| 項目 | 設定例 |
-|---|---|
-| ランキングID | `high_score` |
-| 表示名 | `ハイスコア` |
-| 並び順 | `high_score` |
+```csharp
+var ranks = await RankingApi.SyncLeaderboardsAsync();
+await ranks[0].SetAsync("ハイスコア", RankingOrder.HighScore);
+await ranks[0].EnableAsync();
 
-タイムや手数のように小さい値を上位にする場合は、並び順を`low_score`にします。
+await ranks[1].SetAsync("クリアタイム", RankingOrder.LowScore);
+await ranks[1].EnableAsync();
+```
+
+タイムのように小さい値を上位にする場合は`RankingOrder.LowScore`を指定します。`ranks[0]`と`ranks[1]`が固定された2つのランキング枠です。
+
+`LeaderboardAutoSync`をシーン内のGameObjectへ追加すれば、Inspectorで設定した配列をゲーム起動時に自動同期できます。
 
 ## Unityへ追加する
 
@@ -51,17 +56,17 @@ GameLauncherがGameServerの接続先を管理するため、Unityプロジェ�
 4. GitHub repoのURLとバージョンタグを入力します。
 
 ```text
-https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.1.3
+https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.2.0
 ```
 
-開発中の最新版を使う場合は`#v0.1.3`を`#main`へ置き換えられますが、完成したゲームではタグによるバージョン固定を推奨します。
+開発中の最新版を使う場合は`#v0.2.0`を`#main`へ置き換えられますが、完成したゲームではタグによるバージョン固定を推奨します。
 
 `Packages/manifest.json`へ直接追加する場合は次のように記述します。
 
 ```json
 {
   "dependencies": {
-    "com.mihix.gamelauncher-ranking": "https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.1.3"
+    "com.mihix.gamelauncher-ranking": "https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.2.0"
   }
 }
 ```
@@ -78,10 +83,11 @@ public class GameClear : MonoBehaviour
     {
         try
         {
-            ScoreResult result = await RankingApi.SubmitScoreAsync(
-                "high_score",   // GameServerで設定したランキングID
-                playerName,
-                score);
+            Ranking[] ranks = await RankingApi.SyncLeaderboardsAsync();
+            ScoreResult result = await ranks[0].InsertAsync(playerName, score);
+
+            // 必要なときにServer上の最新順位表を再取得できます。
+            ScoreEntry[] entries = await ranks[0].GetAsync();
 
             Debug.Log($"現在 {result.Rank} 位です");
         }
@@ -102,11 +108,12 @@ public async void ShowRanking()
 {
     try
     {
-        Leaderboard[] boards = await RankingApi.GetLeaderboardsAsync();
+        Ranking[] ranks = await RankingApi.SyncLeaderboardsAsync();
 
-        foreach (Leaderboard board in boards)
+        foreach (Ranking rank in ranks)
         {
-            foreach (ScoreEntry entry in board.Entries)
+            if (!rank.Enabled) continue;
+            foreach (ScoreEntry entry in rank.Entries)
             {
                 UnityEngine.Debug.Log(
                     $"{entry.Rank}位 {entry.PlayerName}: {entry.Score}");
@@ -122,11 +129,19 @@ public async void ShowRanking()
 
 ## API一覧
 
-### `RankingApi.SubmitScoreAsync`
+### `RankingApi.SyncLeaderboardsAsync`
 
 ```csharp
-Task<ScoreResult> SubmitScoreAsync(
-    string leaderboardId,
+Task<Ranking[]> SyncLeaderboardsAsync(
+    CancellationToken cancellationToken = default)
+```
+
+常に2件の`Ranking`操作オブジェクトを返します。`SetAsync`、`InsertAsync`、`GetAsync`、`EnableAsync`、`DisableAsync`で各枠を操作できます。無効化しても設定とスコアは削除されません。
+
+### `Ranking.InsertAsync`
+
+```csharp
+Task<ScoreResult> InsertAsync(
     string playerName,
     long score,
     CancellationToken cancellationToken = default)
@@ -134,23 +149,63 @@ Task<ScoreResult> SubmitScoreAsync(
 
 送信成功時は`ScoreResult.Rank`から現在順位を取得できます。
 
-### `RankingApi.GetLeaderboardsAsync`
+### `Ranking.GetAsync`
 
 ```csharp
-Task<Leaderboard[]> GetLeaderboardsAsync(
+Task<ScoreEntry[]> GetAsync(
     CancellationToken cancellationToken = default)
 ```
 
-各`Leaderboard`の`Entries`には、上位記録の順位、プレイヤー名、スコア、投稿時刻が入ります。
+そのランキング枠の最新順位表を取得します。同時に`Title`、`Order`、`Enabled`、`Entries`も最新状態へ更新されます。
 
-ゲームIDはGameLauncherが起動時に自動設定します。互換性のため、先頭に`string gameId`を指定する従来のオーバーロードも利用できますが、Launcher経由の通信では実際に起動中のゲームIDが優先されます。
+### `Ranking.SetAsync` / `EnableAsync` / `DisableAsync`
+
+```csharp
+Task SetAsync(string title, RankingOrder order, CancellationToken cancellationToken = default)
+Task EnableAsync(CancellationToken cancellationToken = default)
+Task DisableAsync(CancellationToken cancellationToken = default)
+```
+
+`SetAsync`で表示名と並び順を設定します。`EnableAsync`と`DisableAsync`は表示・スコア受付を切り替えます。無効化しても保存済みスコアは残ります。
+
+ゲームIDを指定するAPIはありません。GameLauncherが起動ごとに発行するセッショントークンから対象ゲームを安全に特定します。
+
+## v0.1.xからの移行
+
+v0.2.0では、別ゲームのランキングを書き換えられないよう通信先を起動セッションへ固定しました。この変更に伴い、次の旧APIは利用できません。
+
+```csharp
+// v0.1.xのコード。この形式はv0.2.0ではコンパイルできません。
+await RankingApi.GetLeaderboardsAsync(gameId);
+await RankingApi.SubmitScoreAsync(gameId, leaderboardId, playerName, score);
+await RankingApi.SubmitScoreAsync(leaderboardId, playerName, score);
+```
+
+次のように、Launcherから現在のゲームに割り当てられた2枠を取得して操作します。
+
+```csharp
+Ranking[] ranks = await RankingApi.SyncLeaderboardsAsync();
+await ranks[0].SetAsync("ハイスコア", RankingOrder.HighScore);
+await ranks[0].EnableAsync();
+ScoreResult result = await ranks[0].InsertAsync(playerName, score);
+ScoreEntry[] entries = await ranks[0].GetAsync();
+```
+
+- 以前のランキングIDは、用途に応じて`ranks[0]`または`ranks[1]`へ置き換えます。
+- `gameId`は渡しません。GameLauncherがセッショントークンから安全に判定します。
+- Unity Editorでは本番通信を行いません。Windows向けにビルドし、GameLauncherから起動して確認します。
+- v0.1.xのまま公開済みのゲームは、依存タグを更新しない限りそのまま利用できます。
+
+## 動作確認
+
+Unity 2022.3.62f3でWindowsプレイヤーをビルドし、ランキング2枠の設定、取得、スコア送信、無効化、再有効化、保存済みスコアの保持を確認しています。
 
 ## Unity Editorの診断ログ
 
-Unity EditorのPlay Modeで`GetLeaderboardsAsync`または`SubmitScoreAsync`を呼んでも、本番通信は送信しません。ゲームIDを省略するAPIではGameLauncherからの起動が必要だと案内し、ゲームIDを指定する従来のAPIでは引数をローカル診断します。
+Unity EditorのPlay Modeで各APIを呼んでも、本番通信は送信しません。引数をローカル診断し、GameLauncherから起動した製品ビルドで確認するよう案内します。
 
-- `gameId`、`leaderboardId`、プレイヤー名が空でないか検証
-- 呼び出した処理、ゲームID、ランキングIDをConsoleへ表示
+- ランキング番号、表示名、プレイヤー名が正しいか検証
+- 呼び出した処理とランキング番号をConsoleへ表示
 - 本番通信にはビルド後、GameLauncherからゲームを起動する必要があることを案内
 
 診断後は`RankingApiException`を送出するため、通常の`try/catch`で処理できます。診断処理は`UNITY_EDITOR`のときだけコンパイルされるため、配布するゲームでは通常どおりGameLauncherへ通信します。Editorで案内ログだけを止めたい場合は、APIを呼ぶ前に次のように指定します。
@@ -161,11 +216,11 @@ RankingApi.EnableEditorDiagnostics = false;
 
 ## 自分のゲームで変更する場所
 
-- `high_score` を、GameServer管理画面で作ったランキングIDへ変更します。
+- `ranks[0]`または`ranks[1]`を、使用するランキング枠に合わせます。
 - `score` には得点、タイム、手数などの整数値を渡します。
-- 大きい値と小さい値のどちらを上位にするかはGameServer側で設定します。
+- 大きい値と小さい値のどちらを上位にするかは`SetAsync`またはGameServer管理画面で設定します。
 
-ランキングIDは、大文字・小文字も含めてServer側の設定と同じ値を使用してください。ゲームIDはGameLauncherが自動で判定します。
+ゲームIDと自由入力のランキングIDは使いません。ゲームIDはGameLauncherが起動セッションから判定し、ランキングは0・1の固定スロットで扱います。
 
 ## サンプルを読み込む
 
@@ -175,7 +230,7 @@ Package Managerでこのパッケージを選択し、`Samples`欄の`Basic Rank
 
 - GameLauncherが起動しているか確認してください。
 - GameLauncherのランキングServer API設定を確認してください。
-- ランキングIDの大文字・小文字を含め、設定が一致しているか確認してください。
+- 使用している`LeaderboardSlot`が同期した配列位置と一致しているか確認してください。
 - ゲームを単体起動せず、GameLauncherの起動ボタンから実行してください。
 - GameServerとGameLauncherのWindows Firewall設定を確認してください。
 

@@ -1,4 +1,5 @@
 using System;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -6,140 +7,253 @@ using UnityEngine.Networking;
 
 namespace GameLauncher.Ranking
 {
-    /// <summary>
-    /// GameLauncher経由でランキングを利用する入口です。
-    /// 通常はBaseUrlを変更せず、GetLeaderboardsAsyncとSubmitScoreAsyncを呼ぶだけで使えます。
-    /// </summary>
+    /// <summary>GameLauncher経由でランキングを利用する入口です。ゲームIDは指定しません。</summary>
     public static class RankingApi
     {
         public const string DefaultBaseUrl = "http://127.0.0.1:50053";
+        private const string SessionTokenVariable = "GAMELAUNCHER_SESSION_TOKEN";
+        private static readonly SemaphoreSlim ConfigurationLock = new SemaphoreSlim(1, 1);
 
-        /// <summary>
-        /// Unity EditorでAPIを呼んだときに、接続先や失敗原因の診断ログを表示するかどうかです。
-        /// 診断処理そのものはUNITY_EDITORのときだけコンパイルされ、製品ビルドには入りません。
-        /// </summary>
         public static bool EnableEditorDiagnostics { get; set; } = true;
-
-        /// <summary>接続先です。特別な構成でない限り変更しないでください。</summary>
         public static string BaseUrl { get; set; } = DefaultBaseUrl;
-
-        /// <summary>通信を待つ最大秒数です。</summary>
         public static int TimeoutSeconds { get; set; } = 5;
 
-        /// <summary>
-        /// GameLauncherから起動された現在のゲームのランキング一覧を取得します。
-        /// ゲームIDはLauncherが自動で渡すため、通常はこちらを使用してください。
-        /// </summary>
-        public static Task<Leaderboard[]> GetLeaderboardsAsync(
-            CancellationToken cancellationToken = default)
-        {
-            return GetLeaderboardsAsync(ResolveLaunchedGameId(), cancellationToken);
-        }
-
-        /// <summary>
-        /// 指定したゲームのランキング一覧を取得します。
-        /// gameIdには配布ZIPのmeta.jsonと同じidを指定します。
-        /// </summary>
+        /// <summary>現在のゲームに登録されたランキングを取得します。</summary>
         public static async Task<Leaderboard[]> GetLeaderboardsAsync(
-            string gameId,
             CancellationToken cancellationToken = default)
         {
-            RequireValue(gameId, nameof(gameId));
 #if UNITY_EDITOR
-            if (EditorDiagnostics.BlockProductionRequests)
+            throw EditorDiagnostics.CreateEditorOnlyException("ランキング取得", null);
+#else
+            using (UnityWebRequest request = UnityWebRequest.Get($"{NormalizedBaseUrl()}/v1/leaderboards"))
             {
-                throw EditorDiagnostics.CreateEditorOnlyException("ランキング取得", gameId, null);
-            }
-#endif
-            string url = $"{NormalizedBaseUrl()}/v1/games/{UnityWebRequest.EscapeURL(gameId)}/leaderboards";
-
-            using (UnityWebRequest request = UnityWebRequest.Get(url))
-            {
+                Authenticate(request);
                 string json = await SendAsync(request, cancellationToken);
                 try
                 {
                     LeaderboardResponse response = JsonUtility.FromJson<LeaderboardResponse>(json);
-                    Leaderboard[] leaderboards = response?.Leaderboards ?? Array.Empty<Leaderboard>();
-                    return leaderboards;
+                    return response?.Leaderboards ?? Array.Empty<Leaderboard>();
                 }
                 catch (Exception error)
                 {
                     throw new RankingApiException("ランキング応答を読み取れませんでした。", error);
                 }
             }
+#endif
         }
 
-        /// <summary>
-        /// 指定したランキングへ1件のスコアを送信します。
-        /// leaderboardIdにはGameServer管理画面で設定したIDを指定します。
-        /// </summary>
+        /// <summary>ランキング0・1を操作するための2つのオブジェクトを取得します。</summary>
+        public static async Task<Ranking[]> SyncLeaderboardsAsync(
+            CancellationToken cancellationToken = default)
+        {
+            return BuildRankings(await GetLeaderboardsAsync(cancellationToken));
+        }
+
+        /// <summary>配列の0番・1番を有効なランキングとしてLauncherと同期します。</summary>
+        public static async Task<Ranking[]> SyncLeaderboardsAsync(
+            LeaderboardDefinition[] leaderboards,
+            CancellationToken cancellationToken = default)
+        {
+            if (leaderboards == null) throw new ArgumentNullException(nameof(leaderboards));
+            if (leaderboards.Length > 2)
+            {
+                throw new ArgumentException("ランキングは最大2つです。", nameof(leaderboards));
+            }
+            SyncLeaderboardDefinition[] definitions = DefaultDefinitions();
+            for (int index = 0; index < 2; index++)
+            {
+                if (index < leaderboards.Length)
+                {
+                    LeaderboardDefinition definition = leaderboards[index]
+                        ?? throw new ArgumentException($"{index}番のランキング設定が空です。", nameof(leaderboards));
+                    RequireValue(definition.DisplayName, $"{nameof(leaderboards)}[{index}].DisplayName");
+                    definitions[index].name = definition.DisplayName.Trim();
+                    definitions[index].order = OrderValue(definition.Order);
+                    definitions[index].enabled = true;
+                }
+            }
+            await ConfigurationLock.WaitAsync(cancellationToken);
+            try
+            {
+                return BuildRankings(await SendDefinitionsAsync(definitions, cancellationToken));
+            }
+            finally
+            {
+                ConfigurationLock.Release();
+            }
+        }
+
+        internal static async Task<Leaderboard> SetRankingAsync(
+            LeaderboardSlot slot,
+            string title,
+            RankingOrder? order,
+            bool? enabled,
+            CancellationToken cancellationToken)
+        {
+            ValidateSlot(slot);
+            if (title != null) RequireValue(title, nameof(title));
+            await ConfigurationLock.WaitAsync(cancellationToken);
+            try
+            {
+                Leaderboard[] current = await GetLeaderboardsAsync(cancellationToken);
+                SyncLeaderboardDefinition[] definitions = DefaultDefinitions();
+                foreach (Leaderboard board in current)
+                {
+                    int index = (int)board.Slot;
+                    definitions[index].name = string.IsNullOrWhiteSpace(board.Name)
+                        ? definitions[index].name
+                        : board.Name;
+                    definitions[index].order = board.Order == "low_score" ? "low_score" : "high_score";
+                    definitions[index].enabled = board.Enabled;
+                }
+
+                int target = (int)slot;
+                if (title != null) definitions[target].name = title.Trim();
+                if (order.HasValue) definitions[target].order = OrderValue(order.Value);
+                if (enabled.HasValue) definitions[target].enabled = enabled.Value;
+                Leaderboard[] updated = await SendDefinitionsAsync(definitions, cancellationToken);
+                foreach (Leaderboard board in updated)
+                {
+                    if (board.Slot == slot) return board;
+                }
+                throw new RankingApiException($"ランキング{target}の同期結果を取得できませんでした。");
+            }
+            finally
+            {
+                ConfigurationLock.Release();
+            }
+        }
+
+        internal static async Task<Leaderboard> GetRankingAsync(
+            LeaderboardSlot slot,
+            CancellationToken cancellationToken)
+        {
+            ValidateSlot(slot);
+            Leaderboard[] leaderboards = await GetLeaderboardsAsync(cancellationToken);
+            foreach (Leaderboard leaderboard in leaderboards)
+            {
+                if (leaderboard.Slot == slot) return leaderboard;
+            }
+            return null;
+        }
+
+        private static async Task<Leaderboard[]> SendDefinitionsAsync(
+            SyncLeaderboardDefinition[] definitions,
+            CancellationToken cancellationToken)
+        {
+#if UNITY_EDITOR
+            throw EditorDiagnostics.CreateEditorOnlyException("ランキング設定の同期", null);
+#else
+            string json = JsonUtility.ToJson(new SyncLeaderboardsRequest { leaderboards = definitions });
+            using (UnityWebRequest request = JsonRequest(
+                $"{NormalizedBaseUrl()}/v1/leaderboards", UnityWebRequest.kHttpVerbPUT, json))
+            {
+                Authenticate(request);
+                string responseJson = await SendAsync(request, cancellationToken);
+                try
+                {
+                    LeaderboardResponse response = JsonUtility.FromJson<LeaderboardResponse>(responseJson);
+                    return response?.Leaderboards ?? Array.Empty<Leaderboard>();
+                }
+                catch (Exception error)
+                {
+                    throw new RankingApiException("ランキング同期応答を読み取れませんでした。", error);
+                }
+            }
+#endif
+        }
+
+        private static SyncLeaderboardDefinition[] DefaultDefinitions()
+        {
+            return new[] {
+                new SyncLeaderboardDefinition { name = "ランキング1", order = "high_score", enabled = false },
+                new SyncLeaderboardDefinition { name = "ランキング2", order = "high_score", enabled = false },
+            };
+        }
+
+        private static Ranking[] BuildRankings(Leaderboard[] leaderboards)
+        {
+            Leaderboard first = null;
+            Leaderboard second = null;
+            foreach (Leaderboard board in leaderboards ?? Array.Empty<Leaderboard>())
+            {
+                if (board.Slot == LeaderboardSlot.Slot0) first = board;
+                else if (board.Slot == LeaderboardSlot.Slot1) second = board;
+            }
+            return new[] {
+                new Ranking(LeaderboardSlot.Slot0, first),
+                new Ranking(LeaderboardSlot.Slot1, second),
+            };
+        }
+
+        private static string OrderValue(RankingOrder order)
+        {
+            return order == RankingOrder.LowScore ? "low_score" : "high_score";
+        }
+
+        /// <summary>現在のゲームの指定ランキングへスコアを送信します。</summary>
         public static async Task<ScoreResult> SubmitScoreAsync(
-            string gameId,
-            string leaderboardId,
+            LeaderboardSlot slot,
             string playerName,
             long score,
             CancellationToken cancellationToken = default)
         {
-            RequireValue(gameId, nameof(gameId));
-            RequireValue(leaderboardId, nameof(leaderboardId));
+            ValidateSlot(slot);
             RequireValue(playerName, nameof(playerName));
 #if UNITY_EDITOR
-            if (EditorDiagnostics.BlockProductionRequests)
-            {
-                throw EditorDiagnostics.CreateEditorOnlyException("スコア送信", gameId, leaderboardId);
-            }
-#endif
-
-            string url = $"{NormalizedBaseUrl()}/v1/games/{UnityWebRequest.EscapeURL(gameId)}" +
-                         $"/leaderboards/{UnityWebRequest.EscapeURL(leaderboardId)}/scores";
+            throw EditorDiagnostics.CreateEditorOnlyException("スコア送信", ((int)slot).ToString());
+#else
+            string url = $"{NormalizedBaseUrl()}/v1/leaderboards/" +
+                         $"{(int)slot}/scores";
             string json = JsonUtility.ToJson(new ScoreRequest {
                 player_name = playerName.Trim(),
                 score = score,
             });
-
-            using (UnityWebRequest request = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST))
+            using (UnityWebRequest request = JsonRequest(url, UnityWebRequest.kHttpVerbPOST, json))
             {
-                request.uploadHandler = new UploadHandlerRaw(System.Text.Encoding.UTF8.GetBytes(json));
-                request.downloadHandler = new DownloadHandlerBuffer();
-                request.SetRequestHeader("Content-Type", "application/json");
-
+                Authenticate(request);
                 string responseJson = await SendAsync(request, cancellationToken);
                 try
                 {
                     ScoreResult result = JsonUtility.FromJson<ScoreResult>(responseJson);
-                    if (result == null)
-                    {
-                        throw new RankingApiException("スコア送信応答が空です。");
-                    }
+                    if (result == null) throw new RankingApiException("スコア送信応答が空です。");
                     return result;
                 }
-                catch (RankingApiException)
-                {
-                    throw;
-                }
+                catch (RankingApiException) { throw; }
                 catch (Exception error)
                 {
                     throw new RankingApiException("スコア送信応答を読み取れませんでした。", error);
                 }
             }
+#endif
         }
 
-        /// <summary>
-        /// GameLauncherから起動された現在のゲームのランキングへスコアを送信します。
-        /// ゲームIDはLauncherが自動で渡すため、ランキングIDだけ指定します。
-        /// </summary>
-        public static Task<ScoreResult> SubmitScoreAsync(
-            string leaderboardId,
-            string playerName,
-            long score,
-            CancellationToken cancellationToken = default)
+        private static UnityWebRequest JsonRequest(string url, string method, string json)
         {
-            return SubmitScoreAsync(
-                ResolveLaunchedGameId(),
-                leaderboardId,
-                playerName,
-                score,
-                cancellationToken);
+            UnityWebRequest request = new UnityWebRequest(url, method);
+            request.uploadHandler = new UploadHandlerRaw(Encoding.UTF8.GetBytes(json));
+            request.downloadHandler = new DownloadHandlerBuffer();
+            request.SetRequestHeader("Content-Type", "application/json");
+            return request;
+        }
+
+        private static void ValidateSlot(LeaderboardSlot slot)
+        {
+            if (slot != LeaderboardSlot.Slot0 && slot != LeaderboardSlot.Slot1)
+            {
+                throw new ArgumentOutOfRangeException(nameof(slot), "ランキング番号は0または1です。");
+            }
+        }
+
+        private static void Authenticate(UnityWebRequest request)
+        {
+            string token = Environment.GetEnvironmentVariable(SessionTokenVariable);
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                throw new RankingApiException(
+                    "GameLauncherのゲームセッションを確認できません。ゲームをGameLauncherから起動してください。");
+            }
+            request.SetRequestHeader("Authorization", $"Bearer {token.Trim()}");
         }
 
         private static async Task<string> SendAsync(
@@ -148,7 +262,6 @@ namespace GameLauncher.Ranking
         {
             request.timeout = Math.Max(1, TimeoutSeconds);
             UnityWebRequestAsyncOperation operation = request.SendWebRequest();
-
             while (!operation.isDone)
             {
                 if (cancellationToken.IsCancellationRequested)
@@ -158,12 +271,10 @@ namespace GameLauncher.Ranking
                 }
                 await Task.Yield();
             }
-
             if (request.result == UnityWebRequest.Result.Success)
             {
                 return request.downloadHandler?.text ?? string.Empty;
             }
-
             throw new RankingApiException(ReadError(request));
         }
 
@@ -177,15 +288,11 @@ namespace GameLauncher.Ranking
                     ErrorResponse response = JsonUtility.FromJson<ErrorResponse>(body);
                     if (!string.IsNullOrWhiteSpace(response?.message)) return response.message;
                 }
-                catch (Exception)
-                {
-                    // JSON以外の本文は、そのまま下でエラーとして表示します。
-                }
+                catch (Exception) { }
                 return body;
             }
-
             return string.IsNullOrWhiteSpace(request.error)
-                ? "GameLauncherのランキングAPIに接続できません。GameLauncherが起動しているか確認してください。"
+                ? "GameLauncherのランキングAPIに接続できません。"
                 : request.error;
         }
 
@@ -196,25 +303,13 @@ namespace GameLauncher.Ranking
                 : BaseUrl.Trim().TrimEnd('/');
         }
 
-        private static string ResolveLaunchedGameId()
-        {
-            string gameId = Environment.GetEnvironmentVariable("GAMELAUNCHER_GAME_ID");
-            if (!string.IsNullOrWhiteSpace(gameId)) return gameId.Trim();
-
-            throw new RankingApiException(
-                "ゲームIDを取得できません。ゲームをビルドし、GameLauncherから起動して確認してください。" +
-                "Unity Editorで引数だけ確認する場合は、gameIdを指定するオーバーロードを使用してください。");
-        }
-
         private static void RequireValue(string value, string parameterName)
         {
-            if (string.IsNullOrWhiteSpace(value))
-            {
+            if (!string.IsNullOrWhiteSpace(value)) return;
 #if UNITY_EDITOR
-                EditorDiagnostics.InvalidParameter(parameterName);
+            EditorDiagnostics.InvalidParameter(parameterName);
 #endif
-                throw new ArgumentException("空文字は指定できません。", parameterName);
-            }
+            throw new ArgumentException("空文字は指定できません。", parameterName);
         }
 
 #if UNITY_EDITOR
@@ -222,36 +317,24 @@ namespace GameLauncher.Ranking
         {
             private const string Prefix = "[GameLauncher Ranking 診断]";
 
-            // constにすると、この後の本番通信用コードがコンパイラーから到達不能と判定されます。
-            // プロパティにして、Editorでは必ず本番通信を止めつつ警告を発生させないようにします。
-            internal static bool BlockProductionRequests => true;
-
             internal static RankingApiException CreateEditorOnlyException(
                 string operation,
-                string gameId,
-                string leaderboardId)
+                string slot)
             {
-                string leaderboard = string.IsNullOrWhiteSpace(leaderboardId)
+                string leaderboard = string.IsNullOrWhiteSpace(slot)
                     ? string.Empty
-                    : $" / leaderboardId: {leaderboardId}";
+                    : $" / slot: {slot}";
                 string message =
-                    $"{operation}の引数を確認しました。gameId: {gameId}{leaderboard}\n" +
-                    "Unity Editorから本番ランキング通信は行いません。実通信はゲームをビルドし、GameLauncherから起動して確認してください。";
-
-                if (EnableEditorDiagnostics)
-                {
-                    Debug.LogWarning($"{Prefix} {message}");
-                }
-
+                    $"{operation}の引数を確認しました{leaderboard}。\n" +
+                    "Unity Editorから本番ランキング通信は行いません。ゲームをビルドし、GameLauncherから起動して確認してください。";
+                if (EnableEditorDiagnostics) Debug.LogWarning($"{Prefix} {message}");
                 return new RankingApiException(message);
             }
 
             internal static void InvalidParameter(string parameterName)
             {
                 if (!EnableEditorDiagnostics) return;
-                Debug.LogError(
-                    $"{Prefix} 引数 {parameterName} が空です。" +
-                    "gameIdはmeta.jsonのid、leaderboardIdはGameServer管理画面の設定と完全に一致させてください。");
+                Debug.LogError($"{Prefix} 引数 {parameterName} が空です。");
             }
         }
 #endif

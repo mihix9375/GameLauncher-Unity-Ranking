@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.0] - 2026-10-02
+
+### Breaking Changes
+
+- v0.1.xと後方互換性はありません
+- `gameId`および自由文字列のランキングIDを受け取るAPIを削除
+- ランキング指定を`LeaderboardSlot.Slot0` / `Slot1`の固定2枠へ変更
+- GameLauncherが発行する起動セッショントークンを必須化
+
+### Added
+
+- `SyncLeaderboardsAsync()`から常に2つの`Ranking`操作オブジェクトを取得するAPIを追加
+- `Ranking.SetAsync`、`InsertAsync`、`EnableAsync`、`DisableAsync`を追加
+- 最新順位表を取得する`Ranking.GetAsync`を追加
+- Inspectorから起動時に同期できる`LeaderboardAutoSync`を追加
+
 ## [0.1.3] - 2026-09-24
 
 ### Added

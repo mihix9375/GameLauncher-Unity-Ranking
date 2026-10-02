@@ -3,27 +3,41 @@ using GameLauncher.Ranking;
 using UnityEngine;
 
 /// <summary>
-/// InspectorへゲームID・ランキングID・プレイヤー名を入力し、
-/// Context Menuから通信を試せる最小サンプルです。
+/// ランキング配列の取得・設定・スコア送信を試せる最小サンプルです。
 /// </summary>
 public sealed class RankingExample : MonoBehaviour
 {
-    [Header("GameServerで設定した値")]
-    [SerializeField] private string leaderboardId = "high_score";
+    [Header("使用するランキング枠")]
+    [SerializeField] private LeaderboardSlot leaderboardSlot = LeaderboardSlot.Slot0;
 
     [Header("送信するテストデータ")]
     [SerializeField] private string playerName = "PLAYER";
     [SerializeField] private long score = 1000;
+
+    [ContextMenu("ランキング設定を同期")]
+    public async void SyncLeaderboards()
+    {
+        try
+        {
+            Ranking[] ranks = await RankingApi.SyncLeaderboardsAsync();
+            Ranking rank = ranks[(int)leaderboardSlot];
+            await rank.SetAsync("ハイスコア", RankingOrder.HighScore);
+            await rank.EnableAsync();
+            Debug.Log($"{rank.Title}を有効にしました。");
+        }
+        catch (Exception error)
+        {
+            Debug.LogError($"ランキングを作成できませんでした: {error.Message}");
+        }
+    }
 
     [ContextMenu("テストスコアを送信")]
     public async void SubmitTestScore()
     {
         try
         {
-            ScoreResult result = await RankingApi.SubmitScoreAsync(
-                leaderboardId,
-                playerName,
-                score);
+            Ranking[] ranks = await RankingApi.SyncLeaderboardsAsync();
+            ScoreResult result = await ranks[(int)leaderboardSlot].InsertAsync(playerName, score);
             Debug.Log($"スコアを送信しました。現在 {result.Rank} 位です。");
         }
         catch (Exception error)
@@ -37,11 +51,13 @@ public sealed class RankingExample : MonoBehaviour
     {
         try
         {
-            Leaderboard[] boards = await RankingApi.GetLeaderboardsAsync();
-            foreach (Leaderboard board in boards)
+            Ranking[] ranks = await RankingApi.SyncLeaderboardsAsync();
+            foreach (Ranking rank in ranks)
             {
-                Debug.Log($"ランキング: {board.Name} ({board.Id})");
-                foreach (ScoreEntry entry in board.Entries)
+                if (!rank.Enabled) continue;
+                Debug.Log($"ランキング: {rank.Title} ({rank.Slot})");
+                ScoreEntry[] entries = await rank.GetAsync();
+                foreach (ScoreEntry entry in entries)
                 {
                     Debug.Log($"{entry.Rank}位 {entry.PlayerName}: {entry.Score}");
                 }
