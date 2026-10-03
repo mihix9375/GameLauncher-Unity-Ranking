@@ -198,6 +198,15 @@ namespace GameLauncher.Ranking
             long score,
             CancellationToken cancellationToken = default)
         {
+            return await SubmitScoreAsync(slot, playerName, (RankingScore)score, cancellationToken);
+        }
+
+        public static async Task<ScoreResult> SubmitScoreAsync(
+            LeaderboardSlot slot,
+            string playerName,
+            RankingScore score,
+            CancellationToken cancellationToken = default)
+        {
             ValidateSlot(slot);
             RequireValue(playerName, nameof(playerName));
 #if UNITY_EDITOR
@@ -207,7 +216,7 @@ namespace GameLauncher.Ranking
                          $"{(int)slot}/scores";
             string json = JsonUtility.ToJson(new ScoreRequest {
                 player_name = playerName.Trim(),
-                score = score,
+                score = score.RawValue,
             });
             using (UnityWebRequest request = JsonRequest(url, UnityWebRequest.kHttpVerbPOST, json))
             {

@@ -1,4 +1,5 @@
 using System;
+using System.Numerics;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -42,12 +43,13 @@ namespace GameLauncher.Ranking
     {
         [SerializeField] private int rank;
         [SerializeField] private string player_name;
-        [SerializeField] private long score;
+        [SerializeField] private string score;
         [SerializeField] private long submitted_at;
 
         public int Rank => rank;
         public string PlayerName => player_name;
-        public long Score => score;
+        public RankingScore Score => RankingScore.Parse(score);
+        public string RawScore => score;
         public long SubmittedAt => submitted_at;
     }
 
@@ -100,6 +102,17 @@ namespace GameLauncher.Ranking
         {
             return RankingApi.SubmitScoreAsync(Slot, playerName, score, cancellationToken);
         }
+
+        public Task<ScoreResult> InsertAsync(string playerName, RankingScore score, CancellationToken cancellationToken = default)
+            => RankingApi.SubmitScoreAsync(Slot, playerName, score, cancellationToken);
+        public Task<ScoreResult> InsertAsync(string playerName, BigInteger score, CancellationToken cancellationToken = default)
+            => InsertAsync(playerName, (RankingScore)score, cancellationToken);
+        public Task<ScoreResult> InsertAsync(string playerName, double score, CancellationToken cancellationToken = default)
+            => InsertAsync(playerName, (RankingScore)score, cancellationToken);
+        public Task<ScoreResult> InsertAsync(string playerName, decimal score, CancellationToken cancellationToken = default)
+            => InsertAsync(playerName, (RankingScore)score, cancellationToken);
+        public Task<ScoreResult> InsertAsync(string playerName, string score, CancellationToken cancellationToken = default)
+            => InsertAsync(playerName, RankingScore.Parse(score), cancellationToken);
 
         /// <summary>このランキング枠の最新順位表を取得します。</summary>
         public async Task<ScoreEntry[]> GetAsync(CancellationToken cancellationToken = default)
@@ -163,7 +176,7 @@ namespace GameLauncher.Ranking
     internal sealed class ScoreRequest
     {
         public string player_name;
-        public long score;
+        public string score;
     }
 
     [Serializable]
