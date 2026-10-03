@@ -2,6 +2,7 @@
 .vs/
 .vscode/
 *.csproj
+!Tests~/ScoreTests.csproj
 *.sln
 *.user
 *.tmp

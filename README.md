@@ -8,7 +8,7 @@ UnityゲームからGameLauncher経由でランキングを利用するための
 - `await`できる関数でランキングの作成・取得・スコア送信が可能
 - HTTP、JSON、URLエンコード、エラー応答をパッケージ内で処理
 - ランキングはゲームごとに最大2つ
-- 得点、タイム、手数などの符号付き64bit整数に対応
+- 得点、タイム、手数などの大きな整数・小数・指数表記に対応
 - Unity EditorでのAPI呼び出し時に接続先や失敗原因を自動診断
 - Unity 2022.3 LTS以降に対応
 
@@ -46,6 +46,44 @@ await ranks[1].EnableAsync();
 
 タイムのように小さい値を上位にする場合は`RankingOrder.LowScore`を指定します。`ranks[0]`と`ranks[1]`が固定された2つのランキング枠です。
 
+## 大きなスコアと指数表記
+
+v0.3.0の機能です。GameLauncher v0.7.0・GameServer v0.6.0と組み合わせてください。通信・保存の`score`は数値文字列となり、`ScoreEntry.Score`も`long`から`RankingScore`へ変更しています。旧版との混在はできません。旧`leaderboards.json`の整数値はServerが引き続き読み込めます。
+
+```csharp
+using System.Numerics;
+using GameLauncher.Ranking;
+
+// これまでの整数もそのまま送信できます。
+await ranks[0].InsertAsync("PLAYER", 1000L);
+
+// 大きな整数を正確に送る場合。先にdoubleへ変換しないでください。
+await ranks[0].InsertAsync("PLAYER", BigInteger.Parse("100000000000000000000000000001"));
+
+// 浮動小数点数・10進小数にも対応します。
+await ranks[0].InsertAsync("PLAYER", 1.25e100);
+await ranks[0].InsertAsync("PLAYER", 123.456m);
+
+// doubleの範囲を超える値も数値文字列またはRankingScoreで送れます。
+await ranks[0].InsertAsync("PLAYER", "1.23456789e1000");
+await ranks[0].InsertAsync("PLAYER", RankingScore.Parse("1e-1000"));
+
+ScoreEntry[] entries = await ranks[0].GetAsync();
+foreach (ScoreEntry entry in entries)
+{
+    // 表示だけが自動で指数表記になります（例: 1.235e1000）。
+    UnityEngine.Debug.Log(entry.Score.ToString());
+    // 計算・保存に使う場合は、丸めていない値を使ってください。
+    UnityEngine.Debug.Log(entry.Score.RawValue);
+}
+```
+
+有効数字は最大1024桁、正規化した10進指数は-10000〜10000です。負の値・0も扱えます。順位比較は正確な10進値で行い、表示の丸めは順位に影響しません。絶対値が`1e9`以上、または0以外で`1e-4`未満の値は、4有効桁の指数表示へ自動変換します。Launcherも同じルールで表示し、スコアにポインタを合わせると丸めていない数値文字列を確認できます。
+
+`double`自体は約15〜17桁の精度なので、変換前に失われた桁は復元できません。大きな整数は`BigInteger`、正確な10進値は`decimal`または数値文字列を使ってください。カンマ・単位・全角数字・NaN・Infinityは指定できません。不正な形式は`ArgumentException`、範囲外はその派生型`ArgumentOutOfRangeException`になります（型変換時に同期的に例外が出る場合もあるため、呼び出し全体をtry内に置きます）。
+
+`RankingScore`は数値比較（`==`・`<`・`>`など）が可能です。整数なら`ToBigInteger()`で正確に取り出せます。小数を`ToBigInteger()`へ渡すと`InvalidOperationException`、doubleの範囲外を`ToDouble()`へ渡すと`OverflowException`になります。`ToDouble()`は範囲内でもdoubleの精度へ丸められます。`ToString()`は表示用なので、再送には`RawValue`を使ってください。
+
 `LeaderboardAutoSync`をシーン内のGameObjectへ追加すれば、Inspectorで設定した配列をゲーム起動時に自動同期できます。
 
 ## Unityへ追加する
@@ -56,17 +94,17 @@ await ranks[1].EnableAsync();
 4. GitHub repoのURLとバージョンタグを入力します。
 
 ```text
-https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.2.0
+https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.3.0
 ```
 
-開発中の最新版を使う場合は`#v0.2.0`を`#main`へ置き換えられますが、完成したゲームではタグによるバージョン固定を推奨します。
+開発中の最新版を使う場合は`#v0.3.0`を`#main`へ置き換えられますが、完成したゲームではタグによるバージョン固定を推奨します。
 
 `Packages/manifest.json`へ直接追加する場合は次のように記述します。
 
 ```json
 {
   "dependencies": {
-    "com.mihix.gamelauncher-ranking": "https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.2.0"
+    "com.mihix.gamelauncher-ranking": "https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.3.0"
   }
 }
 ```
@@ -129,6 +167,29 @@ public async void ShowRanking()
 
 ## API一覧
 
+### 使う型と戻り値
+
+| 型 | 用途・主な値 |
+|---|---|
+| `Ranking[]` | 操作用の2枠。`ranks[0]`と`ranks[1]`を使います |
+| `Ranking` | 1枠を操作するオブジェクト。`Title`は`string`、`Order`は`RankingOrder`、`Enabled`は`bool`、`Entries`は`ScoreEntry[]` |
+| `LeaderboardSlot` | `Slot0`・`Slot1`だけを指定する列挙型 |
+| `RankingOrder` | `HighScore`は大きい値が上位、`LowScore`は小さい値が上位 |
+| `LeaderboardDefinition` | `SyncLeaderboardsAsync(定義配列)`へ渡す設定。表示名と並び順を持ちます |
+| `Leaderboard` | 取得結果のスナップショット。`Order`はenumではなく`"high_score"`・`"low_score"`の文字列です |
+| `ScoreResult` | 送信結果。`Ok`は`bool`、`Rank`は`int`。`Ok == true`かつ`Rank >= 1`を確認します |
+| `ScoreEntry` | 1件の記録。`PlayerName`は`string`、`Score`は`RankingScore`、`RawScore`は`string`、`SubmittedAt`は`long`、`Rank`は`int` |
+| `RankingScore` | 正確なスコア型。`RawValue`は丸めていない文字列、`ToString()`は自動指数表示。整数は`ToBigInteger()`で取り出せます |
+| `Task` / `Task<T>` | 非同期処理。`await`で完了を待ち、戻り値・例外を受け取ります |
+| `CancellationToken` | 処理を中断したいときに渡します。Server側の処理の取り消しは保証しません |
+| `RankingApiException` | 通信・認証・Serverの拒否・Editor診断などの例外。理由は`Message`に入ります |
+
+`InsertAsync`には`long`・`BigInteger`・`double`・`decimal`・数値文字列・`RankingScore`を渡せます。小数の秒数を使う場合も、秒／ミリ秒などの単位をゲームごとに統一してください。`SubmittedAt`はUNIX秒です。
+
+`Entries`は取得時点のデータで、自動更新されません。`InsertAsync`も`Entries`を更新しないため、最新順位表が必要なら`await rank.GetAsync()`を呼びます。返るのは上位10件で、Serverの保持件数は最大100件です。送信後の順位が返っても、保持範囲外のスコアが残るとは限りません。
+
+APIはUnityのメインスレッドから呼んでください。通信を速くする目的で`Task.Run`へ入れないでください。
+
 ### `RankingApi.SyncLeaderboardsAsync`
 
 ```csharp
@@ -148,6 +209,8 @@ Task<ScoreResult> InsertAsync(
 ```
 
 送信成功時は`ScoreResult.Rank`から現在順位を取得できます。
+
+スコア引数には上記の各数値型を受け付けるオーバーロードがあります。低レベルAPIの`RankingApi.SubmitScoreAsync`を直接使う場合は`long`または`RankingScore`を渡します。
 
 ### `Ranking.GetAsync`
 
@@ -198,6 +261,12 @@ ScoreEntry[] entries = await ranks[0].GetAsync();
 
 ## 動作確認
 
+`RankingScore`の純粋な数値テストは、Unityを起動せずに.NET 9 SDKで実行できます。
+
+```text
+dotnet run --project Tests~/ScoreTests.csproj
+```
+
 Unity 2022.3.62f3でWindowsプレイヤーをビルドし、ランキング2枠の設定、取得、スコア送信、無効化、再有効化、保存済みスコアの保持を確認しています。
 
 ## Unity Editorの診断ログ
@@ -227,6 +296,69 @@ RankingApi.EnableEditorDiagnostics = false;
 Package Managerでこのパッケージを選択し、`Samples`欄の`Basic Ranking Example`をImportしてください。
 
 ## エラーになるとき
+
+### 呼び出し順と例外の受け取り方
+
+```csharp
+try
+{
+    Ranking[] ranks = await RankingApi.SyncLeaderboardsAsync();
+    await ranks[0].SetAsync("ハイスコア", RankingOrder.HighScore);
+    await ranks[0].EnableAsync();
+    ScoreResult result = await ranks[0].InsertAsync("PLAYER", 1000L);
+    if (!result.Ok || result.Rank < 1)
+        throw new RankingApiException("送信成功を確認できませんでした。");
+}
+catch (OperationCanceledException)
+{
+    // キャンセルは通常の中断。送信開始後なら登録済みの可能性があります。
+}
+catch (ArgumentException error)
+{
+    // 入力値・スロットなどを修正します。同じ値のまま再試行しません。
+    UnityEngine.Debug.LogWarning(error.Message);
+}
+catch (RankingApiException error)
+{
+    // 接続・認証・Serverの拒否など。ゲーム本編を止めず、理由を記録します。
+    UnityEngine.Debug.LogWarning(error.Message);
+}
+catch (Exception error)
+{
+    // 想定外の不具合はスタックトレースも残します。
+    UnityEngine.Debug.LogException(error);
+}
+```
+
+上のコードでは`using System;`と`using GameLauncher.Ranking;`を追加してください。`ArgumentNullException`・`ArgumentOutOfRangeException`は`ArgumentException`の派生型なので、このcatchで扱えます。
+
+各呼び出しの`await`を省略すると、`insert`が設定・有効化より先に走る可能性があります。Taskを待たずに呼び出すと、周囲の`try/catch`でも非同期の例外を受け取れません。`async void`はUnityイベントの入口だけで使い、その中で例外を捕まえます。それ以外は`async Task`を返し、呼び出し元が`await`してください。
+
+### 原因別の一般的な対処
+
+| 原因 | 例外・結果 | 対処 |
+|---|---|---|
+| 空文字・空白のタイトル／名前、0・1以外のスロット | `ArgumentException`またはその派生型 | 入力・設定を直す |
+| 名前が25文字以上、制御文字を含む、タイトルが41文字以上 | 現版では主に`RankingApiException` | 名前は1〜24文字、タイトルは1〜40文字。送信前に検証する |
+| Unity Editorから呼んだ | `RankingApiException` | 本番通信は行わない仕様。ビルドしてLauncherから起動する |
+| セッショントークンなし・認証拒否 | `RankingApiException` | exeを単体起動せず、Launcherから起動し直す |
+| ランキング未同期・無効 | `RankingApiException` | `SetAsync`・`EnableAsync`の完了を待つ |
+| 接続切断・タイムアウト・保存失敗 | `RankingApiException` | ログと接続を確認。スコアは自動再送しない |
+| 処理中にキャンセルを検出 | `OperationCanceledException` | 中断扱い。Serverへの登録取消しとは考えない |
+| 成功応答でも`Ok == false`・順位が不正 | 現版では例外にならない場合あり | 戻り値を確認して失敗として扱う |
+| それ以外 | `Exception` | スタックトレースを保存し、送信中UIを`finally`で解除する |
+
+取得処理は、接続が復旧してから手動で再試行できます。自動再試行する場合でも回数上限と待ち時間を設けてください。**スコア送信はタイムアウトしてもServer側では登録済みの可能性があり、同じスコアを自動再送すると重複します。** 現APIには送信IDによる重複防止がありません。取得結果に自分のスコアが見当たらなくても、上位10件以外は返らないため「未登録」の証明にはなりません。
+
+`RankingApiException`には現状、HTTPステータスや再試行可能性の専用プロパティがありません。`Message`の文言で自動再試行を決めないでください。
+
+### 現版の注意点
+
+2026-10-03の調査では、Serverに「不正な設定を拒否したとき既存ランキングがメモリ上から消える」「保存失敗でもスコアがメモリ上には追加される」問題を確認しています。このドキュメント・サンプル追加だけでは修正されません。設定の自動再試行やスコアの無条件な再送は避けてください。
+
+UPMも`SetAsync(null)`や不正な`RankingOrder`を十分に拒否できていません。nullではない有効なタイトルと、定義済みenum値だけを渡してください。Editor診断はServerの全検証の代わりにはなりません。
+
+`Samples~/BasicExample/SafeRankingExample.cs`には、入力検証、`set → enable → insert`の順次実行、連打防止、原因別catch、破棄時キャンセル、送信結果の確認、`finally`によるUI復帰をまとめた例があります。`Status`と`IsBusy`をゲーム内UIに表示できます。サンプルはServerの不具合そのものを修正するものではありません。
 
 - GameLauncherが起動しているか確認してください。
 - GameLauncherのランキングServer API設定を確認してください。
