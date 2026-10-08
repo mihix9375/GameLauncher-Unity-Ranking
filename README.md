@@ -94,17 +94,17 @@ foreach (ScoreEntry entry in entries)
 4. GitHub repoのURLとバージョンタグを入力します。
 
 ```text
-https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.3.0
+https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.3.1
 ```
 
-開発中の最新版を使う場合は`#v0.3.0`を`#main`へ置き換えられますが、完成したゲームではタグによるバージョン固定を推奨します。
+開発中の最新版を使う場合は`#v0.3.1`を`#main`へ置き換えられますが、完成したゲームではタグによるバージョン固定を推奨します。
 
 `Packages/manifest.json`へ直接追加する場合は次のように記述します。
 
 ```json
 {
   "dependencies": {
-    "com.mihix.gamelauncher-ranking": "https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.3.0"
+    "com.mihix.gamelauncher-ranking": "https://github.com/mihix9375/GameLauncher-Unity-Ranking.git#v0.3.1"
   }
 }
 ```
@@ -265,7 +265,11 @@ ScoreEntry[] entries = await ranks[0].GetAsync();
 
 ```text
 dotnet run --project Tests~/ScoreTests.csproj
+dotnet run --project Tests~/ApiTests.csproj
+dotnet run --project Tests~/ApiTests.csproj -p:EditorTests=true
 ```
+
+`ApiTests`はUnityの通信・JSON部分をテスト用に置き換えた回帰テストです。入力検証、呼び出し順、応答の検証、キャンセルを確認し、実際のLauncher・Serverには通信しません。Unityプレイヤーでの実機確認とは別のテストです。
 
 Unity 2022.3.62f3でWindowsプレイヤーをビルドし、ランキング2枠の設定、取得、スコア送信、無効化、再有効化、保存済みスコアの保持を確認しています。
 
@@ -345,18 +349,20 @@ catch (Exception error)
 | ランキング未同期・無効 | `RankingApiException` | `SetAsync`・`EnableAsync`の完了を待つ |
 | 接続切断・タイムアウト・保存失敗 | `RankingApiException` | ログと接続を確認。スコアは自動再送しない |
 | 処理中にキャンセルを検出 | `OperationCanceledException` | 中断扱い。Serverへの登録取消しとは考えない |
-| 成功応答でも`Ok == false`・順位が不正 | 現版では例外にならない場合あり | 戻り値を確認して失敗として扱う |
+| 成功応答でも`Ok == false`・順位が不正 | `RankingApiException` | 登録済みの可能性を考慮し、自動再送しない |
 | それ以外 | `Exception` | スタックトレースを保存し、送信中UIを`finally`で解除する |
 
 取得処理は、接続が復旧してから手動で再試行できます。自動再試行する場合でも回数上限と待ち時間を設けてください。**スコア送信はタイムアウトしてもServer側では登録済みの可能性があり、同じスコアを自動再送すると重複します。** 現APIには送信IDによる重複防止がありません。取得結果に自分のスコアが見当たらなくても、上位10件以外は返らないため「未登録」の証明にはなりません。
 
-`RankingApiException`には現状、HTTPステータスや再試行可能性の専用プロパティがありません。`Message`の文言で自動再試行を決めないでください。
+`RankingApiException.HttpStatusCode`にはHTTPエラーのコードが入ります。接続失敗・Editor診断・不正な成功応答などでは`null`です。保存失敗は500、不正な入力は400または422などで返ります。ステータスや`Message`だけでスコアの自動再送を決めないでください。
 
-### 現版の注意点
+### v0.3.1の修正と注意点
 
-2026-10-03の調査では、Serverに「不正な設定を拒否したとき既存ランキングがメモリ上から消える」「保存失敗でもスコアがメモリ上には追加される」問題を確認しています。このドキュメント・サンプル追加だけでは修正されません。設定の自動再試行やスコアの無条件な再送は避けてください。
+同じ`Ranking`オブジェクトで取得・設定・有効化・投稿が重なっても直列に処理し、遅れて届いた取得結果で新しい設定を上書きしません。同期応答で設定が実際に反映されているかも検証します。通信完了のタイミングでキャンセルされた場合も`OperationCanceledException`として扱います（Server側で登録済みの可能性は残ります）。
 
-UPMも`SetAsync(null)`や不正な`RankingOrder`を十分に拒否できていません。nullではない有効なタイトルと、定義済みenum値だけを渡してください。Editor診断はServerの全検証の代わりにはなりません。
+GameServer v0.7.0・GameLauncher v0.8.0と合わせて利用してください。GameServer v0.6.0には、不正な設定の拒否や保存失敗でメモリ上のランキングが変わる問題があります。v0.7.0では、変更候補を一時ファイルへ保存して置換に成功した後だけメモリを更新し、設定・投稿・削除の失敗時は元のデータを維持します。
+
+v0.3.1では、`SetAsync(null)`・長すぎるタイトル／プレイヤー名・制御文字・不正なUnicode・未定義の`RankingOrder`を送信前に拒否します。文字数はServerと同じUnicode文字数で数えます。設定処理とスコア送信は同じロックで直列化しますが、成功・例外を確認するため、必ず`await`でset → enable → insertの順に完了を待ってください。不正な成功応答も`RankingApiException`として通知します。Editorでは本番通信を送りません。
 
 `Samples~/BasicExample/SafeRankingExample.cs`には、入力検証、`set → enable → insert`の順次実行、連打防止、原因別catch、破棄時キャンセル、送信結果の確認、`finally`によるUI復帰をまとめた例があります。`Status`と`IsBusy`をゲーム内UIに表示できます。サンプルはServerの不具合そのものを修正するものではありません。
 

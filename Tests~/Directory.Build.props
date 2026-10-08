@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <!-- 複数のテストプロジェクトで生成物・apphostを上書きしない。 -->
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)obj/$(MSBuildProjectName)/</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)bin/$(MSBuildProjectName)/</BaseOutputPath>
+  </PropertyGroup>
+</Project>
