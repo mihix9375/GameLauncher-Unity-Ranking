@@ -63,7 +63,9 @@ namespace GameLauncher.Ranking
         [SerializeField] private bool enabled;
         [SerializeField] private ScoreEntry[] entries;
 
-        public LeaderboardSlot Slot => id == "1" ? LeaderboardSlot.Slot1 : LeaderboardSlot.Slot0;
+        public LeaderboardSlot Slot => id == "0" ? LeaderboardSlot.Slot0 :
+            id == "1" ? LeaderboardSlot.Slot1 : throw new RankingApiException("ランキング応答のスロットが不正です。");
+        internal bool HasEntries => entries != null;
         public string Name => name;
         public string Order => order;
         public bool Enabled => enabled;
@@ -73,6 +75,13 @@ namespace GameLauncher.Ranking
     /// <summary>ランキング0または1を直感的に操作するためのオブジェクトです。</summary>
     public sealed class Ranking
     {
+        private readonly SemaphoreSlim snapshotLock = new SemaphoreSlim(1, 1);
+        private async Task<Leaderboard> UpdateSnapshotAsync(Func<Task<Leaderboard>> operation, CancellationToken cancellationToken)
+        {
+            await snapshotLock.WaitAsync(cancellationToken);
+            try { Snapshot = await operation(); return Snapshot; }
+            finally { snapshotLock.Release(); }
+        }
         public LeaderboardSlot Slot { get; }
         public string Title => Snapshot?.Name ?? string.Empty;
         public RankingOrder Order => Snapshot?.Order == "low_score" ? RankingOrder.LowScore : RankingOrder.HighScore;
@@ -92,7 +101,8 @@ namespace GameLauncher.Ranking
             RankingOrder order = RankingOrder.HighScore,
             CancellationToken cancellationToken = default)
         {
-            Snapshot = await RankingApi.SetRankingAsync(Slot, title, order, null, cancellationToken);
+            RankingApi.ValidateTitle(title, nameof(title));
+            await UpdateSnapshotAsync(() => RankingApi.SetRankingAsync(Slot, title, order, null, cancellationToken), cancellationToken);
         }
 
         public Task<ScoreResult> InsertAsync(
@@ -100,11 +110,15 @@ namespace GameLauncher.Ranking
             long score,
             CancellationToken cancellationToken = default)
         {
-            return RankingApi.SubmitScoreAsync(Slot, playerName, score, cancellationToken);
+            return InsertAsync(playerName, (RankingScore)score, cancellationToken);
         }
 
-        public Task<ScoreResult> InsertAsync(string playerName, RankingScore score, CancellationToken cancellationToken = default)
-            => RankingApi.SubmitScoreAsync(Slot, playerName, score, cancellationToken);
+        public async Task<ScoreResult> InsertAsync(string playerName, RankingScore score, CancellationToken cancellationToken = default)
+        {
+            await snapshotLock.WaitAsync(cancellationToken);
+            try { return await RankingApi.SubmitScoreAsync(Slot, playerName, score, cancellationToken); }
+            finally { snapshotLock.Release(); }
+        }
         public Task<ScoreResult> InsertAsync(string playerName, BigInteger score, CancellationToken cancellationToken = default)
             => InsertAsync(playerName, (RankingScore)score, cancellationToken);
         public Task<ScoreResult> InsertAsync(string playerName, double score, CancellationToken cancellationToken = default)
@@ -117,18 +131,18 @@ namespace GameLauncher.Ranking
         /// <summary>このランキング枠の最新順位表を取得します。</summary>
         public async Task<ScoreEntry[]> GetAsync(CancellationToken cancellationToken = default)
         {
-            Snapshot = await RankingApi.GetRankingAsync(Slot, cancellationToken);
-            return Entries;
+            Leaderboard result = await UpdateSnapshotAsync(() => RankingApi.GetRankingAsync(Slot, cancellationToken), cancellationToken);
+            return result?.Entries ?? Array.Empty<ScoreEntry>();
         }
 
         public async Task EnableAsync(CancellationToken cancellationToken = default)
         {
-            Snapshot = await RankingApi.SetRankingAsync(Slot, null, null, true, cancellationToken);
+            await UpdateSnapshotAsync(() => RankingApi.SetRankingAsync(Slot, null, null, true, cancellationToken), cancellationToken);
         }
 
         public async Task DisableAsync(CancellationToken cancellationToken = default)
         {
-            Snapshot = await RankingApi.SetRankingAsync(Slot, null, null, false, cancellationToken);
+            await UpdateSnapshotAsync(() => RankingApi.SetRankingAsync(Slot, null, null, false, cancellationToken), cancellationToken);
         }
     }
 
@@ -146,8 +160,12 @@ namespace GameLauncher.Ranking
     /// <summary>GameLauncherランキングAPIの通信エラーです。</summary>
     public sealed class RankingApiException : Exception
     {
+        /// <summary>HTTPエラーの応答コード。接続失敗・不正な成功応答などではnullです。</summary>
+        public long? HttpStatusCode { get; }
         public RankingApiException(string message) : base(message) { }
         public RankingApiException(string message, Exception innerException) : base(message, innerException) { }
+        public RankingApiException(string message, long httpStatusCode) : base(message)
+        { HttpStatusCode = httpStatusCode; }
     }
 
     [Serializable]
@@ -155,7 +173,7 @@ namespace GameLauncher.Ranking
     {
         [SerializeField] private Leaderboard[] leaderboards;
 
-        public Leaderboard[] Leaderboards => leaderboards ?? Array.Empty<Leaderboard>();
+        public Leaderboard[] Leaderboards => leaderboards;
     }
 
     [Serializable]
